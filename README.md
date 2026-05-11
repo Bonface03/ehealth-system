@@ -1,4 +1,3 @@
-markdown
 # 🏥 E-Health System
 
 A comprehensive electronic health record system with biometric fingerprint authentication, role-based access control, and real-time patient management capabilities.
