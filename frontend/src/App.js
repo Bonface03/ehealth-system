@@ -1,6 +1,5 @@
-// src/App.js
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { LoadingProvider } from './context/LoadingContext';
@@ -33,44 +32,65 @@ import HospitalAdminDashboard from './components/admin/HospitalAdminDashboard';
 import FinanceDashboard from './components/finance/FinanceDashboard';
 import './styles/App.css';
 
-// Protected Route component
+// Protected Route component - FIXED to prevent infinite loop
 const ProtectedRoute = ({ children, requiredRole, requiredPermissions = [], requireAll = false }) => {
     const { user, loading } = useAuth();
-    const { hasAnyPermission, hasAllPermissions, isRole } = useRole();
+    const { hasAnyPermission, hasAllPermissions, isRole, loading: roleLoading } = useRole();
+    const location = useLocation();
     
-    if (loading) {
+    // Show loading spinner while checking auth
+    if (loading || roleLoading) {
         return <div className="loading-spinner">Loading...</div>;
     }
     
+    // Not logged in - redirect to login
     if (!user) {
-        return <Navigate to="/login" />;
+        return <Navigate to="/login" state={{ from: location }} replace />;
     }
     
+    // Check role if required
     if (requiredRole && !isRole(requiredRole)) {
-        if (isRole('master_admin')) {
-            return <Navigate to="/admin" />;
+        // Prevent infinite loop by checking current location
+        const redirectPath = isRole('master_admin') ? '/admin' : '/dashboard';
+        
+        // Only redirect if not already on the target path
+        if (location.pathname !== redirectPath) {
+            return <Navigate to={redirectPath} replace />;
         }
-        return <Navigate to="/dashboard" />;
+        
+        // If already on the target path, show unauthorized message instead of redirecting
+        return (
+            <div style={{ padding: '40px', textAlign: 'center' }}>
+                <h2>⛔ Access Denied</h2>
+                <p>You don't have permission to access this page.</p>
+                <p>Required role: {requiredRole}</p>
+                <p>Your role: {user.role}</p>
+                <button onClick={() => window.location.href = '/'}>Go to Home</button>
+            </div>
+        );
     }
     
+    // Check permissions if required
     if (requiredPermissions.length > 0) {
-        let hasAccess = false;
-        
-        if (requireAll) {
-            hasAccess = hasAllPermissions(requiredPermissions);
-        } else {
-            hasAccess = hasAnyPermission(requiredPermissions);
-        }
+        let hasAccess = requireAll 
+            ? hasAllPermissions(requiredPermissions)
+            : hasAnyPermission(requiredPermissions);
         
         if (!hasAccess) {
-            return <Navigate to="/dashboard" />;
+            return (
+                <div style={{ padding: '40px', textAlign: 'center' }}>
+                    <h2>⛔ Permission Denied</h2>
+                    <p>You don't have the required permissions to access this page.</p>
+                    <button onClick={() => window.location.href = '/'}>Go to Home</button>
+                </div>
+            );
         }
     }
     
     return children;
 };
 
-// Public Route component
+// Public Route component - FIXED removed unused location variable
 const PublicRoute = ({ children }) => {
     const { user, loading } = useAuth();
     const { isRole } = useRole();
@@ -84,9 +104,9 @@ const PublicRoute = ({ children }) => {
     }
     
     if (isRole('master_admin')) {
-        return <Navigate to="/admin" />;
+        return <Navigate to="/admin" replace />;
     }
-    return <Navigate to="/dashboard" />;
+    return <Navigate to="/dashboard" replace />;
 };
 
 function AppContent() {
@@ -240,7 +260,7 @@ function AppContent() {
             
             <footer className="app-footer">
                 <div className="footer-content">
-                    <p>&copy; 2025 E-Health System. All rights reserved.</p>
+                    <p>&copy; 2026 E-Health System. All rights reserved.</p>
                     <p>Secure Electronic Health Records with Fingerprint Authentication</p>
                 </div>
             </footer>

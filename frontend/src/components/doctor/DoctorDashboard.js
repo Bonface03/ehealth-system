@@ -3,6 +3,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import api from '../../services/api';
+import DocumentUpload from '../common/DocumentUpload';
+import DocumentList from '../common/DocumentList';
 import './DoctorDashboard.css';
 
 const DoctorDashboard = () => {
@@ -18,7 +20,11 @@ const DoctorDashboard = () => {
     const [showAdmissionModal, setShowAdmissionModal] = useState(false);
     const [showDischargeModal, setShowDischargeModal] = useState(false);
     const [showPatientInfoModal, setShowPatientInfoModal] = useState(false);
+    const [showAdmissionInfoModal, setShowAdmissionInfoModal] = useState(false);
     const [patientDetails, setPatientDetails] = useState(null);
+    const [admissionDetails, setAdmissionDetails] = useState(null);
+    const [activeTab, setActiveTab] = useState('info');
+    const [refreshDocuments, setRefreshDocuments] = useState(false);
     const [prescriptionData, setPrescriptionData] = useState({
         patientId: '',
         medication: '',
@@ -47,9 +53,17 @@ const DoctorDashboard = () => {
         admittedPatients: 0
     });
 
+    // Get current user ID (handle both possible property names)
+    const getCurrentUserId = useCallback(() => {
+        return user?.userId || user?.id || null;
+    }, [user]);
+
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
+            const currentUserId = getCurrentUserId();
+            console.log('Fetching data for doctor ID:', currentUserId);
+            
             // Fetch patients
             try {
                 const patientsRes = await api.get('/doctor/patients');
@@ -60,12 +74,38 @@ const DoctorDashboard = () => {
                 setPatients([]);
             }
             
-            // Fetch admitted patients
+            // Fetch admitted patients - Get all admissions and filter
             try {
-                const admittedRes = await api.get('/admissions/active');
-                const doctorAdmissions = admittedRes.data?.filter(admission => admission.doctor_id === user?.userId) || [];
-                setAdmittedPatients(doctorAdmissions);
-                setStats(prev => ({ ...prev, admittedPatients: doctorAdmissions.length || 0 }));
+                const admittedRes = await api.get('/admissions');
+                console.log('All admissions from API:', admittedRes.data);
+                
+                // Filter admissions that are active and belong to current doctor
+                const doctorAdmissions = admittedRes.data?.filter(admission => 
+                    admission.status === 'admitted' && 
+                    admission.doctor_id === currentUserId
+                ) || [];
+                
+                // Fetch patient names for each admission
+                const admissionsWithNames = await Promise.all(doctorAdmissions.map(async (admission) => {
+                    try {
+                        const patientRes = await api.get(`/patients/${admission.patient_id}`);
+                        return {
+                            ...admission,
+                            patient_name: patientRes.data?.full_name || patientRes.data?.username || `Patient ${admission.patient_id}`,
+                            patient_health_id: patientRes.data?.health_record_id
+                        };
+                    } catch (err) {
+                        return {
+                            ...admission,
+                            patient_name: `Patient ${admission.patient_id}`,
+                            patient_health_id: null
+                        };
+                    }
+                }));
+                
+                console.log('Filtered doctor admissions with names:', admissionsWithNames);
+                setAdmittedPatients(admissionsWithNames);
+                setStats(prev => ({ ...prev, admittedPatients: admissionsWithNames.length || 0 }));
             } catch (admissionErr) {
                 console.error('Error fetching admissions:', admissionErr);
                 setAdmittedPatients([]);
@@ -85,7 +125,7 @@ const DoctorDashboard = () => {
             try {
                 const today = new Date().toISOString().split('T')[0];
                 const appointmentsRes = await api.get('/appointments');
-                const todayAppointments = appointmentsRes.data?.filter(a => a.appointment_date === today && a.doctor_id === user?.userId).length || 0;
+                const todayAppointments = appointmentsRes.data?.filter(a => a.appointment_date === today && a.doctor_id === currentUserId).length || 0;
                 setStats(prev => ({ ...prev, todayAppointments: todayAppointments }));
             } catch (appointmentErr) {
                 console.error('Error fetching appointments:', appointmentErr);
@@ -94,11 +134,10 @@ const DoctorDashboard = () => {
             
         } catch (error) {
             console.error('Error fetching dashboard data:', error);
-            // Don't show error toast here - let individual handlers manage it
         } finally {
             setLoading(false);
         }
-    }, [user?.userId]);
+    }, [getCurrentUserId]);
 
     useEffect(() => {
         fetchData();
@@ -118,9 +157,28 @@ const DoctorDashboard = () => {
         try {
             const response = await api.get(`/patients/${patient.id}`);
             setPatientDetails(response.data);
+            setActiveTab('info');
             setShowPatientInfoModal(true);
         } catch (error) {
             showError('Failed to load patient details');
+        }
+    };
+
+    // Function to view admission details
+    const handleViewAdmissionInfo = async (admission) => {
+        try {
+            // Get patient details
+            const patientRes = await api.get(`/patients/${admission.patient_id}`);
+            setAdmissionDetails({
+                ...admission,
+                patient_name: patientRes.data?.full_name || patientRes.data?.username,
+                patient_health_id: patientRes.data?.health_record_id,
+                patient_email: patientRes.data?.email,
+                patient_contact: patientRes.data?.contact_number
+            });
+            setShowAdmissionInfoModal(true);
+        } catch (error) {
+            showError('Failed to load admission details');
         }
     };
 
@@ -144,21 +202,32 @@ const DoctorDashboard = () => {
             return;
         }
         
+        if (!admissionData.reason) {
+            showError('Please provide a reason for admission');
+            return;
+        }
+        
         setSubmitting(true);
         try {
-            await api.post('/admissions', {
-                patientId: selectedPatient.id,
-                doctorId: user?.userId,
+            const currentUserId = getCurrentUserId();
+            console.log('Admitting patient with doctor_id:', currentUserId);
+            
+            const response = await api.post('/admissions', {
+                patient_id: selectedPatient.id,
+                doctor_id: currentUserId,
                 ward: admissionData.ward,
-                bedNumber: admissionData.bedNumber,
+                bed_number: admissionData.bedNumber,
                 reason: admissionData.reason,
                 diagnosis: admissionData.diagnosis,
-                expectedStayDays: admissionData.expectedStayDays
+                expected_stay_days: admissionData.expectedStayDays
             });
+            
+            console.log('Admission response:', response.data);
             showSuccess(`Patient ${selectedPatient.username} admitted to ${admissionData.ward} Ward`);
             setShowAdmissionModal(false);
             fetchData();
         } catch (error) {
+            console.error('Admission error:', error);
             showError(error.response?.data?.error || 'Failed to admit patient');
         } finally {
             setSubmitting(false);
@@ -176,14 +245,15 @@ const DoctorDashboard = () => {
         
         setSubmitting(true);
         try {
-            await api.post(`/admissions/${selectedAdmission.id}/discharge`, {
-                dischargeNotes: dischargeData.notes,
-                dischargeInstructions: dischargeData.instructions
+            await api.put(`/admissions/${selectedAdmission.id}/discharge`, {
+                discharge_notes: dischargeData.notes,
+                discharge_instructions: dischargeData.instructions
             });
             showSuccess(`Patient discharged successfully`);
             setShowDischargeModal(false);
             fetchData();
         } catch (error) {
+            console.error('Discharge error:', error);
             showError(error.response?.data?.error || 'Failed to discharge patient');
         } finally {
             setSubmitting(false);
@@ -277,13 +347,21 @@ const DoctorDashboard = () => {
         }
     };
 
+    const handleDocumentUploadComplete = () => {
+        setRefreshDocuments(prev => !prev);
+    };
+
     const closeModal = () => {
         setShowPrescribeModal(false);
         setShowAdmissionModal(false);
         setShowDischargeModal(false);
         setShowPatientInfoModal(false);
+        setShowAdmissionInfoModal(false);
         setSelectedPatient(null);
         setSelectedAdmission(null);
+        setAdmissionDetails(null);
+        setPatientDetails(null);
+        setActiveTab('info');
         setPrescriptionData({
             patientId: '',
             medication: '',
@@ -307,6 +385,11 @@ const DoctorDashboard = () => {
             case 'discharged': return '#3498db';
             default: return '#95a5a6';
         }
+    };
+
+    const formatDate = (dateString) => {
+        if (!dateString) return 'N/A';
+        return new Date(dateString).toLocaleDateString();
     };
 
     const renderAdmittedPatients = () => {
@@ -334,32 +417,31 @@ const DoctorDashboard = () => {
                                 <th>Ward</th>
                                 <th>Bed</th>
                                 <th>Admitted On</th>
+                                <th>Reason</th>
                                 <th>Diagnosis</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             {admittedPatients.map(admission => (
-                                <tr key={admission.id} className="admitted-row">
+                                <tr key={admission.id}>
                                     <td className="patient-name">
                                         <strong>{admission.patient_name}</strong>
                                         <span className="patient-id-small">ID: {admission.patient_id}</span>
                                     </td>
-                                    <td className="ward-info">
-                                        <span className="ward-icon">🏥</span>
-                                        {admission.ward} Ward
-                                    </td>
+                                    <td>{admission.ward || 'Not assigned'} Ward</td>
                                     <td>{admission.bed_number || 'Not assigned'}</td>
-                                    <td>{new Date(admission.admitted_at).toLocaleDateString()}</td>
+                                    <td>{formatDate(admission.admitted_at)}</td>
+                                    <td className="reason-text">{admission.reason || 'Not specified'}</td>
                                     <td className="diagnosis-text">{admission.diagnosis || 'Pending'}</td>
                                     <td>
                                         <div className="action-buttons">
                                             <button 
                                                 type="button"
                                                 className="btn-view"
-                                                onClick={() => handleViewPatientInfo({ id: admission.patient_id, username: admission.patient_name })}
+                                                onClick={() => handleViewAdmissionInfo(admission)}
                                             >
-                                                View
+                                                View Details
                                             </button>
                                             <button 
                                                 type="button"
@@ -669,12 +751,13 @@ const DoctorDashboard = () => {
                                 />
                             </div>
                             <div className="form-group">
-                                <label>Reason for Admission</label>
+                                <label>Reason for Admission *</label>
                                 <textarea
                                     value={admissionData.reason}
                                     onChange={(e) => setAdmissionData({...admissionData, reason: e.target.value})}
                                     rows="2"
                                     placeholder="Reason for admission..."
+                                    required
                                 />
                             </div>
                             <div className="form-group">
@@ -714,8 +797,9 @@ const DoctorDashboard = () => {
                     <div className="modal-content" onClick={e => e.stopPropagation()}>
                         <button type="button" className="modal-close" onClick={closeModal}>×</button>
                         <h3>Discharge Patient</h3>
-                        <p><strong>Patient:</strong> {selectedAdmission.patient_name}</p>
+                        <p><strong>Patient:</strong> {selectedAdmission.patient_name || `Patient ID: ${selectedAdmission.patient_id}`}</p>
                         <p><strong>Ward:</strong> {selectedAdmission.ward}</p>
+                        <p><strong>Diagnosis:</strong> {selectedAdmission.diagnosis || 'Pending'}</p>
                         <form onSubmit={handleDischargeSubmit}>
                             <div className="form-group">
                                 <label>Discharge Notes</label>
@@ -748,27 +832,95 @@ const DoctorDashboard = () => {
                 </div>
             )}
 
-            {/* Patient Info Modal */}
+            {/* Patient Info Modal with Document Upload */}
             {showPatientInfoModal && patientDetails && (
                 <div className="modal-overlay" onClick={closeModal}>
                     <div className="modal-content large" onClick={e => e.stopPropagation()}>
                         <button type="button" className="modal-close" onClick={closeModal}>×</button>
-                        <h3>Patient Information</h3>
+                        <h3>Patient: {patientDetails.full_name || patientDetails.username}</h3>
+                        
+                        <div className="modal-tabs">
+                            <button 
+                                className={`tab ${activeTab === 'info' ? 'active' : ''}`}
+                                onClick={() => setActiveTab('info')}
+                            >
+                                Patient Information
+                            </button>
+                            <button 
+                                className={`tab ${activeTab === 'documents' ? 'active' : ''}`}
+                                onClick={() => setActiveTab('documents')}
+                            >
+                                Documents
+                            </button>
+                        </div>
+
+                        {activeTab === 'info' ? (
+                            <div className="patient-details">
+                                <div className="detail-section">
+                                    <h4>Personal Information</h4>
+                                    <p><strong>Name:</strong> {patientDetails.full_name || patientDetails.username}</p>
+                                    <p><strong>Username:</strong> {patientDetails.username}</p>
+                                    <p><strong>Email:</strong> {patientDetails.email || 'Not provided'}</p>
+                                    <p><strong>Contact:</strong> {patientDetails.contact_number || 'Not provided'}</p>
+                                    <p><strong>Emergency Contact:</strong> {patientDetails.emergency_contact || 'Not provided'}</p>
+                                </div>
+                                <div className="detail-section">
+                                    <h4>Medical Information</h4>
+                                    <p><strong>Health Record ID:</strong> {patientDetails.health_record_id}</p>
+                                    <p><strong>Blood Type:</strong> {patientDetails.blood_type || 'Not recorded'}</p>
+                                    <p><strong>Allergies:</strong> {patientDetails.allergies || 'None reported'}</p>
+                                    <p><strong>Status:</strong> {isPatientAdmitted(patientDetails.id) ? 'Admitted' : 'Active'}</p>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="documents-section">
+                                <DocumentUpload 
+                                    patientId={patientDetails.id} 
+                                    onUploadComplete={handleDocumentUploadComplete}
+                                />
+                                <DocumentList 
+                                    key={refreshDocuments ? 'refresh' : 'static'}
+                                    patientId={patientDetails.id}
+                                    refreshTrigger={refreshDocuments}
+                                />
+                            </div>
+                        )}
+                        
+                        <div className="modal-actions">
+                            <button type="button" className="btn-secondary" onClick={closeModal}>
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Admission Info Modal */}
+            {showAdmissionInfoModal && admissionDetails && (
+                <div className="modal-overlay" onClick={closeModal}>
+                    <div className="modal-content large" onClick={e => e.stopPropagation()}>
+                        <button type="button" className="modal-close" onClick={closeModal}>×</button>
+                        <h3>Admission Details</h3>
                         <div className="patient-details">
                             <div className="detail-section">
-                                <h4>Personal Information</h4>
-                                <p><strong>Name:</strong> {patientDetails.full_name || patientDetails.username}</p>
-                                <p><strong>Username:</strong> {patientDetails.username}</p>
-                                <p><strong>Email:</strong> {patientDetails.email || 'Not provided'}</p>
-                                <p><strong>Contact:</strong> {patientDetails.contact_number || 'Not provided'}</p>
-                                <p><strong>Emergency Contact:</strong> {patientDetails.emergency_contact || 'Not provided'}</p>
+                                <h4>Patient Information</h4>
+                                <p><strong>Name:</strong> {admissionDetails.patient_name}</p>
+                                <p><strong>Health Record ID:</strong> {admissionDetails.patient_health_id || 'N/A'}</p>
+                                <p><strong>Email:</strong> {admissionDetails.patient_email || 'Not provided'}</p>
+                                <p><strong>Contact:</strong> {admissionDetails.patient_contact || 'Not provided'}</p>
+                            </div>
+                            <div className="detail-section">
+                                <h4>Admission Information</h4>
+                                <p><strong>Admitted On:</strong> {formatDate(admissionDetails.admitted_at)}</p>
+                                <p><strong>Ward:</strong> {admissionDetails.ward || 'Not assigned'}</p>
+                                <p><strong>Bed Number:</strong> {admissionDetails.bed_number || 'Not assigned'}</p>
+                                <p><strong>Expected Stay:</strong> {admissionDetails.expected_stay_days || 1} days</p>
                             </div>
                             <div className="detail-section">
                                 <h4>Medical Information</h4>
-                                <p><strong>Health Record ID:</strong> {patientDetails.health_record_id}</p>
-                                <p><strong>Blood Type:</strong> {patientDetails.blood_type || 'Not recorded'}</p>
-                                <p><strong>Allergies:</strong> {patientDetails.allergies || 'None reported'}</p>
-                                <p><strong>Status:</strong> {isPatientAdmitted(patientDetails.id) ? 'Admitted' : 'Active'}</p>
+                                <p><strong>Reason for Admission:</strong> {admissionDetails.reason || 'Not specified'}</p>
+                                <p><strong>Diagnosis:</strong> {admissionDetails.diagnosis || 'Pending'}</p>
+                                <p><strong>Status:</strong> <span className="status-admitted">Admitted</span></p>
                             </div>
                         </div>
                         <div className="modal-actions">

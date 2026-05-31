@@ -1565,15 +1565,240 @@ app.put('/api/patients/:patientId', authenticateToken, (req, res) => {
     });
 });
 
-// ============= ADMISSION ENDPOINTS =============
+// ============= ADMISSIONS ENDPOINTS =============
 
-app.get('/api/admissions/active', authenticateToken, (req, res) => {
-    db.all(`SELECT a.*, u.username as patient_name FROM admissions a JOIN users u ON a.patient_id = u.id WHERE a.status = 'admitted' ORDER BY a.admitted_at DESC`, [], (err, admissions) => { 
-        if (err) return res.json([]);
-        res.json(admissions || []); 
+// Get all admissions (for dashboard and listings)
+app.get('/api/admissions', authenticateToken, (req, res) => {
+    const { status, patient_id, doctor_id } = req.query;
+    
+    let sql = `
+        SELECT a.*, 
+               u.username as patient_name,
+               u.health_record_id as patient_health_id,
+               d.username as doctor_name,
+               d.health_record_id as doctor_health_id,
+               adm.username as admitted_by_name
+        FROM admissions a
+        LEFT JOIN users u ON a.patient_id = u.id
+        LEFT JOIN users d ON a.doctor_id = d.id
+        LEFT JOIN users adm ON a.admitted_by = adm.id
+        WHERE 1=1
+    `;
+    const params = [];
+    
+    if (status) {
+        sql += ' AND a.status = ?';
+        params.push(status);
+    }
+    if (patient_id) {
+        sql += ' AND a.patient_id = ?';
+        params.push(patient_id);
+    }
+    if (doctor_id) {
+        sql += ' AND a.doctor_id = ?';
+        params.push(doctor_id);
+    }
+    
+    sql += ' ORDER BY a.admitted_at DESC';
+    
+    db.all(sql, params, (err, admissions) => {
+        if (err) {
+            console.error('Error fetching admissions:', err);
+            return res.status(500).json({ error: 'Database error' });
+        }
+        res.json(admissions || []);
     });
 });
 
+// IMPORTANT: Put SPECIFIC routes BEFORE dynamic routes (/:id)
+// Get active admissions (currently admitted patients)
+app.get('/api/admissions/active', authenticateToken, (req, res) => {
+    console.log('📋 Fetching active admissions');
+    
+    const sql = `
+        SELECT a.*, 
+               u.username as patient_name,
+               u.health_record_id as patient_health_id,
+               u.email as patient_email,
+               d.username as doctor_name,
+               d.health_record_id as doctor_health_id,
+               adm.username as admitted_by_name
+        FROM admissions a
+        INNER JOIN users u ON a.patient_id = u.id
+        LEFT JOIN users d ON a.doctor_id = d.id
+        LEFT JOIN users adm ON a.admitted_by = adm.id
+        WHERE a.status = 'admitted'
+        ORDER BY a.admitted_at DESC
+    `;
+    
+    db.all(sql, [], (err, admissions) => {
+        if (err) {
+            console.error('Error fetching active admissions:', err.message);
+            return res.status(500).json({ error: 'Database error: ' + err.message });
+        }
+        
+        console.log(`✅ Found ${admissions ? admissions.length : 0} active admissions`);
+        res.json(admissions || []);
+    });
+});
+
+// Get admission statistics
+app.get('/api/admissions/stats', authenticateToken, (req, res) => {
+    console.log('📊 Fetching admission statistics');
+    
+    const sql = `
+        SELECT 
+            COUNT(*) as total_admissions,
+            SUM(CASE WHEN status = 'admitted' THEN 1 ELSE 0 END) as active_admissions,
+            SUM(CASE WHEN status = 'discharged' THEN 1 ELSE 0 END) as discharged_admissions,
+            COUNT(DISTINCT patient_id) as unique_patients
+        FROM admissions
+    `;
+    
+    db.get(sql, [], (err, stats) => {
+        if (err) {
+            console.error('Error fetching admission stats:', err.message);
+            return res.status(500).json({ error: 'Database error' });
+        }
+        
+        res.json({
+            active_admissions: stats?.active_admissions || 0,
+            total_admissions: stats?.total_admissions || 0,
+            discharged_admissions: stats?.discharged_admissions || 0,
+            unique_patients: stats?.unique_patients || 0
+        });
+    });
+});
+
+// Get single admission by ID - THIS MUST COME AFTER the specific routes
+app.get('/api/admissions/:id', authenticateToken, (req, res) => {
+    const sql = `
+        SELECT a.*, 
+               u.username as patient_name,
+               u.health_record_id as patient_health_id,
+               d.username as doctor_name,
+               adm.username as admitted_by_name
+        FROM admissions a
+        LEFT JOIN users u ON a.patient_id = u.id
+        LEFT JOIN users d ON a.doctor_id = d.id
+        LEFT JOIN users adm ON a.admitted_by = adm.id
+        WHERE a.id = ?
+    `;
+    
+    db.get(sql, [req.params.id], (err, admission) => {
+        if (err) {
+            console.error('Error fetching admission:', err.message);
+            return res.status(500).json({ error: 'Database error' });
+        }
+        if (!admission) {
+            return res.status(404).json({ error: 'Admission not found' });
+        }
+        res.json(admission);
+    });
+});
+
+// Get admissions for a specific patient
+app.get('/api/patients/:patientId/admissions', authenticateToken, (req, res) => {
+    const { patientId } = req.params;
+    
+    // Check permissions
+    if (parseInt(req.user.userId) !== parseInt(patientId) && 
+        !['doctor', 'master_admin', 'nurse'].includes(req.user.role)) {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const sql = `
+        SELECT a.*, 
+               d.username as doctor_name,
+               adm.username as admitted_by_name
+        FROM admissions a
+        LEFT JOIN users d ON a.doctor_id = d.id
+        LEFT JOIN users adm ON a.admitted_by = adm.id
+        WHERE a.patient_id = ?
+        ORDER BY a.admitted_at DESC
+    `;
+    
+    db.all(sql, [patientId], (err, admissions) => {
+        if (err) {
+            console.error('Error fetching patient admissions:', err.message);
+            return res.status(500).json({ error: 'Database error' });
+        }
+        res.json(admissions || []);
+    });
+});
+
+// Create a new admission (admit patient)
+app.post('/api/admissions', authenticateToken, (req, res) => {
+    const { patient_id, doctor_id, ward, bed_number, reason, diagnosis, expected_stay_days } = req.body;
+    
+    if (!patient_id || !reason) {
+        return res.status(400).json({ error: 'Patient ID and reason are required' });
+    }
+    
+    // Check if patient is already admitted
+    db.get('SELECT id FROM admissions WHERE patient_id = ? AND status = "admitted"', [patient_id], (err, existing) => {
+        if (err) {
+            return res.status(500).json({ error: 'Database error' });
+        }
+        if (existing) {
+            return res.status(400).json({ error: 'Patient is already admitted' });
+        }
+        
+        db.run(`
+            INSERT INTO admissions (
+                patient_id, doctor_id, admitted_by, ward, bed_number, 
+                reason, diagnosis, expected_stay_days, status, admitted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'admitted', CURRENT_TIMESTAMP)
+        `, [patient_id, doctor_id || req.user.userId, req.user.userId, ward, bed_number, reason, diagnosis, expected_stay_days || 1], 
+        function(err) {
+            if (err) {
+                console.error('Error creating admission:', err);
+                return res.status(500).json({ error: 'Failed to admit patient' });
+            }
+            
+            // Update user status
+            db.run('UPDATE users SET status = "admitted" WHERE id = ?', [patient_id]);
+            
+            res.json({ 
+                success: true, 
+                id: this.lastID, 
+                message: 'Patient admitted successfully' 
+            });
+        });
+    });
+});
+
+// Update admission (discharge patient)
+app.put('/api/admissions/:id/discharge', authenticateToken, (req, res) => {
+    const { discharge_notes, discharge_instructions } = req.body;
+    
+    db.run(`
+        UPDATE admissions 
+        SET status = 'discharged', 
+            discharge_date = CURRENT_TIMESTAMP,
+            discharge_notes = ?,
+            discharge_instructions = ?
+        WHERE id = ?
+    `, [discharge_notes, discharge_instructions, req.params.id], function(err) {
+        if (err) {
+            console.error('Error discharging patient:', err);
+            return res.status(500).json({ error: 'Failed to discharge patient' });
+        }
+        
+        if (this.changes === 0) {
+            return res.status(404).json({ error: 'Admission not found' });
+        }
+        
+        // Get patient_id to update user status
+        db.get('SELECT patient_id FROM admissions WHERE id = ?', [req.params.id], (err, admission) => {
+            if (!err && admission) {
+                db.run('UPDATE users SET status = "active" WHERE id = ?', [admission.patient_id]);
+            }
+        });
+        
+        res.json({ success: true, message: 'Patient discharged successfully' });
+    });
+});
 // ============= START SERVER =============
 const PORT = 3001;
 app.listen(PORT, () => {

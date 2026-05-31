@@ -1,6 +1,5 @@
-// frontend/src/context/AuthContext.js
 import React, { createContext, useState, useContext, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import authService from '../services/authService';
 
 const AuthContext = createContext();
@@ -18,6 +17,7 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const navigate = useNavigate();
+    const location = useLocation();
 
     useEffect(() => {
         checkUser();
@@ -39,41 +39,63 @@ export const AuthProvider = ({ children }) => {
         setLoading(false);
     };
 
-    // Helper function to redirect based on role
+    // Helper function to redirect based on role - FIXED to prevent infinite loop
     const redirectBasedOnRole = (role) => {
         console.log('🔄 Redirecting based on role:', role);
+        const currentPath = location.pathname;
         
         switch(role) {
             case 'master_admin':
-                navigate('/admin');
+                if (currentPath !== '/admin') {
+                    navigate('/admin', { replace: true });
+                }
                 break;
             case 'doctor':
-                navigate('/doctor/dashboard');
+                // Only redirect if not already on a doctor page
+                if (!currentPath.startsWith('/doctor')) {
+                    navigate('/doctor/dashboard', { replace: true });
+                }
                 break;
             case 'nurse':
-                navigate('/nurse');
+                if (currentPath !== '/nurse') {
+                    navigate('/nurse', { replace: true });
+                }
                 break;
             case 'receptionist':
-                navigate('/receptionist');
+                if (currentPath !== '/receptionist') {
+                    navigate('/receptionist', { replace: true });
+                }
                 break;
             case 'pharmacist':
-                navigate('/pharmacist');
+                if (currentPath !== '/pharmacist') {
+                    navigate('/pharmacist', { replace: true });
+                }
                 break;
             case 'lab_technician':
-                navigate('/lab');
+                if (currentPath !== '/lab') {
+                    navigate('/lab', { replace: true });
+                }
                 break;
             case 'radiologist':
-                navigate('/radiologist');
+                if (currentPath !== '/radiologist') {
+                    navigate('/radiologist', { replace: true });
+                }
                 break;
             case 'billing_officer':
-                navigate('/billing');
+                if (currentPath !== '/billing') {
+                    navigate('/billing', { replace: true });
+                }
                 break;
             case 'ict_admin':
-                navigate('/admin');
+                if (currentPath !== '/admin') {
+                    navigate('/admin', { replace: true });
+                }
                 break;
             case 'patient':
             default:
-                navigate('/dashboard');
+                if (currentPath !== '/dashboard') {
+                    navigate('/dashboard', { replace: true });
+                }
                 break;
         }
     };

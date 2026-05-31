@@ -1,4 +1,3 @@
-// src/context/RoleContext.js
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 import api from '../services/api';
 import { useAuth } from './AuthContext';
@@ -20,7 +19,8 @@ export const RoleProvider = ({ children }) => {
     const { user } = useAuth();
 
     const fetchPermissions = useCallback(async () => {
-        const token = localStorage.getItem('authToken');
+        // FIXED: Use 'token' consistently
+        const token = localStorage.getItem('token');
         if (!token) {
             console.log('No token found, skipping permissions fetch');
             setLoading(false);
@@ -32,7 +32,6 @@ export const RoleProvider = ({ children }) => {
             const response = await api.get('/roles/my/permissions');
             console.log('📋 Permissions response:', response.data);
             
-            // IMPORTANT: Don't update any user role here, just permissions
             setUserRole(response.data.role);
             setPermissions(response.data.permissions);
         } catch (error) {
@@ -59,15 +58,15 @@ export const RoleProvider = ({ children }) => {
     }, [user?.id, fetchPermissions]);
 
     const hasPermission = useCallback((permission) => {
-        return permissions.includes(permission);
+        return permissions.includes(permission) || permissions.includes('*');
     }, [permissions]);
 
     const hasAnyPermission = useCallback((permissionList) => {
-        return permissionList.some(p => permissions.includes(p));
+        return permissionList.some(p => permissions.includes(p) || permissions.includes('*'));
     }, [permissions]);
 
     const hasAllPermissions = useCallback((permissionList) => {
-        return permissionList.every(p => permissions.includes(p));
+        return permissionList.every(p => permissions.includes(p) || permissions.includes('*'));
     }, [permissions]);
 
     const isRole = useCallback((role) => {

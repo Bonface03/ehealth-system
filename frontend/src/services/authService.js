@@ -1,7 +1,7 @@
-// frontend/src/services/authService.js
 import api from './api';
 
-const TOKEN_KEY = 'authToken';
+// FIXED: Changed from 'authToken' to 'token' for consistency
+const TOKEN_KEY = 'token';
 const USER_KEY = 'user';
 
 class AuthService {
